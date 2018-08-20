@@ -28,78 +28,81 @@ package main
 
 import (
 	"fmt"
-	"os"
+	"log"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 )
 
-var brokerLoad = make(chan bool)
-var brokerConnection = make(chan bool)
-var brokerClients = make(chan bool)
+var clientsCount = make(chan bool)
+var sessionsCount = make(chan bool)
+var topicsCount = make(chan bool)
 
-func brokerLoadHandler(client MQTT.Client, msg MQTT.Message) {
-	brokerLoad <- true
-	fmt.Printf("BrokerLoadHandler         ")
+func clientsCountHandler(client MQTT.Client, msg MQTT.Message) {
+	clientsCount <- true
+	fmt.Printf("ClientsCountHandler         ")
 	fmt.Printf("[%s]  ", msg.Topic())
 	fmt.Printf("%s\n", msg.Payload())
 }
 
-func brokerConnectionHandler(client MQTT.Client, msg MQTT.Message) {
-	brokerConnection <- true
-	fmt.Printf("BrokerConnectionHandler   ")
+func sessionsCountHandler(client MQTT.Client, msg MQTT.Message) {
+	sessionsCount <- true
+	fmt.Printf("SessionsCountHandler   ")
 	fmt.Printf("[%s]  ", msg.Topic())
 	fmt.Printf("%s\n", msg.Payload())
 }
 
-func brokerClientsHandler(client MQTT.Client, msg MQTT.Message) {
-	brokerClients <- true
-	fmt.Printf("BrokerClientsHandler      ")
+func topicsCountHandler(client MQTT.Client, msg MQTT.Message) {
+	topicsCount <- true
+	fmt.Printf("TopicsCountHandler      ")
 	fmt.Printf("[%s]  ", msg.Topic())
 	fmt.Printf("%s\n", msg.Payload())
 }
 
 func main() {
-	opts := MQTT.NewClientOptions().AddBroker("tcp://iot.eclipse.org:1883").SetClientID("router-sample")
+	opts := MQTT.NewClientOptions()
+	opts.AddBroker("tcp://vm.bwangel.me:1883")
+	opts.SetClientID("router-sample")
+	opts.SetUsername("paho")
+	opts.SetPassword("passwd")
 	opts.SetCleanSession(true)
+	node := "emq@127.0.0.1"
 
 	c := MQTT.NewClient(opts)
 	if token := c.Connect(); token.Wait() && token.Error() != nil {
-		panic(token.Error())
+		log.Fatalln(token.Error())
 	}
 
-	if token := c.Subscribe("$SYS/broker/load/#", 0, brokerLoadHandler); token.Wait() && token.Error() != nil {
-		fmt.Println(token.Error())
-		os.Exit(1)
+	if token := c.Subscribe(fmt.Sprintf("$SYS/brokers/%s/stats/clients/count", node), 0, clientsCountHandler); token.Wait() && token.Error() != nil {
+		log.Fatalln(token.Error())
 	}
 
-	if token := c.Subscribe("$SYS/broker/connection/#", 0, brokerConnectionHandler); token.Wait() && token.Error() != nil {
-		fmt.Println(token.Error())
-		os.Exit(1)
+	if token := c.Subscribe(fmt.Sprintf("$SYS/brokers/%s/stats/sessions/count", node), 0, sessionsCountHandler); token.Wait() && token.Error() != nil {
+		log.Fatalln(token.Error())
 	}
 
-	if token := c.Subscribe("$SYS/broker/clients/#", 0, brokerClientsHandler); token.Wait() && token.Error() != nil {
-		fmt.Println(token.Error())
-		os.Exit(1)
+	if token := c.Subscribe(fmt.Sprintf("$SYS/brokers/%s/stats/topics/count", node), 0, topicsCountHandler); token.Wait() && token.Error() != nil {
+		log.Fatalln(token.Error())
 	}
 
-	loadCount := 0
-	connectionCount := 0
-	clientsCount := 0
+	clientsCountStat := 0
+	sessionsCountStat := 0
+	topicsCountStat := 0
 
-	for i := 0; i < 100; i++ {
+	fmt.Println("Start to listen")
+	for i := 0; i < 5; i++ {
 		select {
-		case <-brokerLoad:
-			loadCount++
-		case <-brokerConnection:
-			connectionCount++
-		case <-brokerClients:
-			clientsCount++
+		case <-clientsCount:
+			clientsCountStat++
+		case <-sessionsCount:
+			sessionsCountStat++
+		case <-topicsCount:
+			topicsCountStat++
 		}
 	}
 
-	fmt.Printf("Received %3d Broker Load messages\n", loadCount)
-	fmt.Printf("Received %3d Broker Connection messages\n", connectionCount)
-	fmt.Printf("Received %3d Broker Clients messages\n", clientsCount)
+	fmt.Printf("Received %3d clientsCount messages\n", clientsCountStat)
+	fmt.Printf("Received %3d sessionsCount messages\n", sessionsCountStat)
+	fmt.Printf("Received %3d topicsCount messages\n", topicsCountStat)
 
 	c.Disconnect(250)
 }
