@@ -12,75 +12,140 @@
  *    Mike Robertson
  */
 
-// This demonstrates how to implement your own Store interface and provide
-// it to the go-mqtt client.
-
 package main
 
 import (
+	"encoding/gob"
 	"fmt"
+	"log"
+	"os"
+	"path"
+	"sync"
 	"time"
 
-	MQTT "github.com/eclipse/paho.mqtt.golang"
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/eclipse/paho.mqtt.golang/packets"
 )
 
-// This NoOpStore type implements the go-mqtt/Store interface, which
-// allows it to be used by the go-mqtt client library. However, it is
-// highly recommended that you do not use this NoOpStore in production,
-// because it will NOT provide any sort of guaruntee of message delivery.
-type NoOpStore struct {
+type FileStore struct {
 	// Contain nothing
+	sync.RWMutex
+	opened bool
+	dir    string
 }
 
-func (store *NoOpStore) Open() {
+func NewFileStore(dir string) mqtt.Store {
+	return &FileStore{
+		dir:    dir,
+		opened: false,
+	}
+}
+
+func (store *FileStore) Open() {
+	store.Lock()
+	defer store.Unlock()
+	store.opened = true
+}
+
+func (store *FileStore) Put(key string, pkg packets.ControlPacket) {
+	store.Lock()
+	defer store.Unlock()
+
+	if !store.opened {
+		log.Println("Filestore not open")
+		return
+	}
+
+	filename := path.Join(store.dir, key)
+	fd, err := os.Create(filename)
+	defer fd.Close()
+
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	encoder := gob.NewEncoder(fd)
+	encoder.Encode(pkg)
+}
+
+func (store *FileStore) Get(key string) packets.ControlPacket {
+	store.Lock()
+	defer store.Unlock()
+
+	if !store.opened {
+		log.Println("Filestore not open")
+		return nil
+	}
+
+	filename := path.Join(store.dir, key)
+	fd, err := os.OpenFile(filename, os.O_RDONLY, 0666)
+	defer fd.Close()
+
+	if err != nil {
+		log.Println("create error:", err)
+		return nil
+	}
+
+	// TODO 用gob编码写入的话，解码的时候需要传入类型，但是文件的类型是根据头来指定的
+	// 放弃gob编码，首先尝试使用普通字节流将内容写入到文件中去
+	var cp = packets.NewControlPacket(packets.Publish)
+
+	decoder := gob.NewDecoder(fd)
+	err = decoder.Decode(cp)
+
+	if err != nil {
+		log.Println("decoder error:", err)
+		return nil
+	}
+
+	return cp
+}
+
+func (store *FileStore) Del(string) {
 	// Do nothing
 }
 
-func (store *NoOpStore) Put(string, packets.ControlPacket) {
-	// Do nothing
-}
-
-func (store *NoOpStore) Get(string) packets.ControlPacket {
-	// Do nothing
+func (store *FileStore) All() []string {
 	return nil
 }
 
-func (store *NoOpStore) Del(string) {
-	// Do nothing
+func (store *FileStore) Close() {
+	store.Lock()
+	defer store.Unlock()
+	if !store.opened {
+		log.Println("Trying to close unopend store")
+		return
+	}
+	store.opened = false
 }
 
-func (store *NoOpStore) All() []string {
-	return nil
-}
-
-func (store *NoOpStore) Close() {
-	// Do Nothing
-}
-
-func (store *NoOpStore) Reset() {
+func (store *FileStore) Reset() {
 	// Do Nothing
 }
 
 func main() {
-	myNoOpStore := &NoOpStore{}
+	myStore := NewFileStore("/tmp/mqtt-store")
 
-	opts := MQTT.NewClientOptions()
-	opts.AddBroker("tcp://iot.eclipse.org:1883")
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker("tcp://vm.bwangel.me:1883")
 	opts.SetClientID("custom-store")
-	opts.SetStore(myNoOpStore)
+	opts.SetStore(myStore)
 
-	var callback MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Message) {
+	var callback mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
 		fmt.Printf("TOPIC: %s\n", msg.Topic())
 		fmt.Printf("MSG: %s\n", msg.Payload())
 	}
 
-	c := MQTT.NewClient(opts)
+	c := mqtt.NewClient(opts)
 	if token := c.Connect(); token.Wait() && token.Error() != nil {
 		panic(token.Error())
 	}
 
-	c.Subscribe("/go-mqtt/sample", 0, callback)
+	if token := c.Subscribe("/go-mqtt/sample", 0, callback); token.Wait() && token.Error() != nil {
+		log.Println(token.Error())
+		return
+	}
 
 	for i := 0; i < 5; i++ {
 		text := fmt.Sprintf("this is msg #%d!", i)
